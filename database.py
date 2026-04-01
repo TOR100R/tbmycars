@@ -1,383 +1,187 @@
-"""
-Base de datos SQLite para Mi Garaje Bot
-"""
-
 import sqlite3
+from datetime import datetime
 import os
-from datetime import datetime, timedelta
 
-DB_PATH = os.getenv("DB_PATH", "garaje.db")
+DB_PATH = os.environ.get("DB_PATH", "garaje.db")
 
 
 class Database:
     def __init__(self):
-        self.conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
+        self.db_path = DB_PATH
         self._create_tables()
 
+    def _conn(self):
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
     def _create_tables(self):
-        c = self.conn.cursor()
-        c.executescript("""
-            CREATE TABLE IF NOT EXISTS coches (
+        conn = self._conn()
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS cars (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                marca TEXT NOT NULL,
-                modelo TEXT NOT NULL,
-                matricula TEXT UNIQUE NOT NULL,
-                km_actuales INTEGER DEFAULT 0,
-                anyo INTEGER,
+                brand TEXT NOT NULL, model TEXT NOT NULL,
+                plate TEXT NOT NULL UNIQUE, year INTEGER,
+                km INTEGER DEFAULT 0, fuel TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
-
-            CREATE TABLE IF NOT EXISTS mantenimientos (
+            CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                coche_id INTEGER NOT NULL,
-                tipo TEXT NOT NULL,
-                fecha TEXT NOT NULL,
-                km_realizacion INTEGER,
-                notas TEXT,
-                proximo_km INTEGER,
-                proxima_fecha TEXT,
+                car_id INTEGER NOT NULL, event_type TEXT NOT NULL,
+                date TEXT NOT NULL, km INTEGER, cost REAL, notes TEXT,
+                next_date TEXT, next_km INTEGER,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (coche_id) REFERENCES coches(id)
+                FOREIGN KEY (car_id) REFERENCES cars(id)
             );
-
-            CREATE TABLE IF NOT EXISTS seguros (
+            CREATE TABLE IF NOT EXISTS insurance (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                coche_id INTEGER NOT NULL,
-                compania TEXT,
-                num_poliza TEXT,
-                fecha_vencimiento TEXT,
-                importe TEXT,
-                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (coche_id) REFERENCES coches(id)
+                car_id INTEGER NOT NULL, company TEXT, policy TEXT,
+                expiry TEXT, cost REAL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (car_id) REFERENCES cars(id)
             );
-
-            CREATE TABLE IF NOT EXISTS itvs (
+            CREATE TABLE IF NOT EXISTS taxes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                coche_id INTEGER NOT NULL,
-                fecha TEXT NOT NULL,
-                proxima_fecha TEXT,
-                resultado TEXT,
-                FOREIGN KEY (coche_id) REFERENCES coches(id)
+                car_id INTEGER NOT NULL, amount REAL, expiry TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (car_id) REFERENCES cars(id)
             );
-
-            CREATE TABLE IF NOT EXISTS impuestos (
+            CREATE TABLE IF NOT EXISTS claims (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                coche_id INTEGER NOT NULL,
-                anyo INTEGER,
-                importe TEXT,
-                fecha_vencimiento TEXT,
-                FOREIGN KEY (coche_id) REFERENCES coches(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS partes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                coche_id INTEGER NOT NULL,
-                fecha TEXT NOT NULL,
-                descripcion TEXT,
-                num_expediente TEXT,
-                estado TEXT DEFAULT 'abierto',
-                FOREIGN KEY (coche_id) REFERENCES coches(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS neumaticos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                coche_id INTEGER NOT NULL,
-                tipo TEXT,
-                marca TEXT,
-                fecha TEXT,
-                km_cambio INTEGER,
-                FOREIGN KEY (coche_id) REFERENCES coches(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS limpiezas (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                coche_id INTEGER NOT NULL,
-                tipo TEXT,
-                fecha TEXT,
-                FOREIGN KEY (coche_id) REFERENCES coches(id)
-            );
-
-            CREATE TABLE IF NOT EXISTS niveles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                coche_id INTEGER NOT NULL,
-                tipo TEXT,
-                fecha TEXT,
-                estado TEXT,
-                FOREIGN KEY (coche_id) REFERENCES coches(id)
+                car_id INTEGER NOT NULL, date TEXT, description TEXT,
+                claim_number TEXT, status TEXT DEFAULT 'Abierto',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (car_id) REFERENCES cars(id)
             );
         """)
-        self.conn.commit()
+        conn.commit()
+        conn.close()
 
-    # ─── COCHES ───────────────────────────────────────────────────────────────
+    def add_car(self, brand, model, plate, year, km, fuel):
+        conn = self._conn()
+        c = conn.cursor()
+        c.execute("INSERT INTO cars (brand,model,plate,year,km,fuel) VALUES (?,?,?,?,?,?)",
+                  (brand, model, plate, year, km, fuel))
+        conn.commit()
+        rid = c.lastrowid
+        conn.close()
+        return rid
 
-    def add_coche(self, marca, modelo, matricula, km, anyo):
-        c = self.conn.cursor()
-        c.execute(
-            "INSERT INTO coches (marca, modelo, matricula, km_actuales, anyo) VALUES (?,?,?,?,?)",
-            (marca, modelo, matricula, km, anyo)
-        )
-        self.conn.commit()
-        return c.lastrowid
+    def get_cars(self):
+        conn = self._conn()
+        rows = conn.execute("SELECT * FROM cars ORDER BY brand, model").fetchall()
+        conn.close()
+        return rows
 
-    def get_coches(self):
-        c = self.conn.cursor()
-        return c.execute("SELECT * FROM coches ORDER BY id").fetchall()
+    def get_car(self, car_id):
+        conn = self._conn()
+        row = conn.execute("SELECT * FROM cars WHERE id=?", (car_id,)).fetchone()
+        conn.close()
+        return row
 
-    def get_coche(self, coche_id):
-        c = self.conn.cursor()
-        return c.execute("SELECT * FROM coches WHERE id=?", (coche_id,)).fetchone()
+    def update_km(self, car_id, km):
+        conn = self._conn()
+        conn.execute("UPDATE cars SET km=? WHERE id=?", (km, car_id))
+        conn.commit()
+        conn.close()
 
-    def get_coche_by_matricula(self, matricula):
-        c = self.conn.cursor()
-        return c.execute("SELECT * FROM coches WHERE matricula=?", (matricula.upper(),)).fetchone()
+    def add_event(self, car_id, event_type, date, km, cost, notes, next_date, next_km):
+        conn = self._conn()
+        conn.execute(
+            "INSERT INTO events (car_id,event_type,date,km,cost,notes,next_date,next_km) VALUES (?,?,?,?,?,?,?,?)",
+            (car_id, event_type, date, km, cost, notes, next_date, next_km))
+        conn.commit()
+        conn.close()
+        if km:
+            car = self.get_car(car_id)
+            if car and km > car['km']:
+                self.update_km(car_id, km)
 
-    def update_km(self, coche_id, km):
-        c = self.conn.cursor()
-        c.execute("UPDATE coches SET km_actuales=? WHERE id=?", (km, coche_id))
-        self.conn.commit()
+    def get_events(self, car_id, limit=20):
+        conn = self._conn()
+        rows = conn.execute("SELECT * FROM events WHERE car_id=? ORDER BY date DESC LIMIT ?", (car_id, limit)).fetchall()
+        conn.close()
+        return rows
 
-    # ─── MANTENIMIENTOS ───────────────────────────────────────────────────────
-
-    def add_mantenimiento(self, coche_id, tipo, fecha, km, notas, proximo_km, proxima_fecha):
-        c = self.conn.cursor()
-        c.execute(
-            "INSERT INTO mantenimientos (coche_id, tipo, fecha, km_realizacion, notas, proximo_km, proxima_fecha) VALUES (?,?,?,?,?,?,?)",
-            (coche_id, tipo, fecha, km, notas, proximo_km, proxima_fecha)
-        )
-        self.conn.commit()
-
-    def get_mantenimientos(self, coche_id):
-        c = self.conn.cursor()
-        return c.execute(
-            "SELECT * FROM mantenimientos WHERE coche_id=? ORDER BY id DESC",
-            (coche_id,)
+    def get_pending_alerts(self, car_id):
+        alerts = []
+        car = self.get_car(car_id)
+        if not car:
+            return alerts
+        today = datetime.now()
+        current_km = car['km']
+        conn = self._conn()
+        events = conn.execute(
+            "SELECT * FROM events WHERE car_id=? AND (next_date IS NOT NULL OR next_km IS NOT NULL)", (car_id,)
         ).fetchall()
-
-    def count_mantenimientos(self, coche_id):
-        c = self.conn.cursor()
-        r = c.execute("SELECT COUNT(*) FROM mantenimientos WHERE coche_id=?", (coche_id,)).fetchone()
-        return r[0]
-
-    def get_ultimo_mantenimiento(self, coche_id):
-        c = self.conn.cursor()
-        return c.execute(
-            "SELECT * FROM mantenimientos WHERE coche_id=? ORDER BY id DESC LIMIT 1",
-            (coche_id,)
-        ).fetchone()
-
-    # ─── SEGURO ───────────────────────────────────────────────────────────────
-
-    def save_seguro(self, coche_id, compania, poliza, vence, importe):
-        c = self.conn.cursor()
-        existing = c.execute("SELECT id FROM seguros WHERE coche_id=?", (coche_id,)).fetchone()
-        if existing:
-            c.execute(
-                "UPDATE seguros SET compania=?, num_poliza=?, fecha_vencimiento=?, importe=?, updated_at=CURRENT_TIMESTAMP WHERE coche_id=?",
-                (compania, poliza, vence, importe, coche_id)
-            )
-        else:
-            c.execute(
-                "INSERT INTO seguros (coche_id, compania, num_poliza, fecha_vencimiento, importe) VALUES (?,?,?,?,?)",
-                (coche_id, compania, poliza, vence, importe)
-            )
-        self.conn.commit()
-
-    def get_seguro(self, coche_id):
-        c = self.conn.cursor()
-        return c.execute("SELECT * FROM seguros WHERE coche_id=?", (coche_id,)).fetchone()
-
-    # ─── ITV ──────────────────────────────────────────────────────────────────
-
-    def add_itv(self, coche_id, fecha, proxima, resultado):
-        c = self.conn.cursor()
-        c.execute(
-            "INSERT INTO itvs (coche_id, fecha, proxima_fecha, resultado) VALUES (?,?,?,?)",
-            (coche_id, fecha, proxima, resultado)
-        )
-        self.conn.commit()
-
-    def get_itvs(self, coche_id):
-        c = self.conn.cursor()
-        return c.execute(
-            "SELECT * FROM itvs WHERE coche_id=? ORDER BY id DESC",
-            (coche_id,)
-        ).fetchall()
-
-    def get_ultima_itv(self, coche_id):
-        c = self.conn.cursor()
-        return c.execute(
-            "SELECT * FROM itvs WHERE coche_id=? ORDER BY id DESC LIMIT 1",
-            (coche_id,)
-        ).fetchone()
-
-    # ─── IMPUESTO ─────────────────────────────────────────────────────────────
-
-    def add_impuesto(self, coche_id, anyo, importe, vence):
-        c = self.conn.cursor()
-        c.execute(
-            "INSERT INTO impuestos (coche_id, anyo, importe, fecha_vencimiento) VALUES (?,?,?,?)",
-            (coche_id, anyo, importe, vence)
-        )
-        self.conn.commit()
-
-    def get_impuestos(self, coche_id):
-        c = self.conn.cursor()
-        return c.execute(
-            "SELECT * FROM impuestos WHERE coche_id=? ORDER BY anyo DESC",
-            (coche_id,)
-        ).fetchall()
-
-    # ─── PARTES ───────────────────────────────────────────────────────────────
-
-    def add_parte(self, coche_id, fecha, descripcion, expediente):
-        c = self.conn.cursor()
-        c.execute(
-            "INSERT INTO partes (coche_id, fecha, descripcion, num_expediente) VALUES (?,?,?,?)",
-            (coche_id, fecha, descripcion, expediente)
-        )
-        self.conn.commit()
-
-    def get_partes(self, coche_id):
-        c = self.conn.cursor()
-        return c.execute(
-            "SELECT * FROM partes WHERE coche_id=? ORDER BY id DESC",
-            (coche_id,)
-        ).fetchall()
-
-    def update_parte_estado(self, parte_id, estado):
-        c = self.conn.cursor()
-        c.execute("UPDATE partes SET estado=? WHERE id=?", (estado, parte_id))
-        self.conn.commit()
-
-    # ─── NEUMÁTICOS ───────────────────────────────────────────────────────────
-
-    def add_neumatico(self, coche_id, tipo, marca, fecha, km):
-        c = self.conn.cursor()
-        c.execute(
-            "INSERT INTO neumaticos (coche_id, tipo, marca, fecha, km_cambio) VALUES (?,?,?,?,?)",
-            (coche_id, tipo, marca, fecha, km)
-        )
-        self.conn.commit()
-
-    def get_neumaticos(self, coche_id):
-        c = self.conn.cursor()
-        return c.execute(
-            "SELECT * FROM neumaticos WHERE coche_id=? ORDER BY id DESC",
-            (coche_id,)
-        ).fetchall()
-
-    # ─── LIMPIEZAS ────────────────────────────────────────────────────────────
-
-    def add_limpieza(self, coche_id, tipo, fecha):
-        c = self.conn.cursor()
-        c.execute(
-            "INSERT INTO limpiezas (coche_id, tipo, fecha) VALUES (?,?,?)",
-            (coche_id, tipo, fecha)
-        )
-        self.conn.commit()
-
-    def get_limpiezas(self, coche_id):
-        c = self.conn.cursor()
-        return c.execute(
-            "SELECT * FROM limpiezas WHERE coche_id=? ORDER BY id DESC",
-            (coche_id,)
-        ).fetchall()
-
-    # ─── NIVELES ──────────────────────────────────────────────────────────────
-
-    def add_nivel(self, coche_id, tipo, fecha, estado):
-        c = self.conn.cursor()
-        c.execute(
-            "INSERT INTO niveles (coche_id, tipo, fecha, estado) VALUES (?,?,?,?)",
-            (coche_id, tipo, fecha, estado)
-        )
-        self.conn.commit()
-
-    def get_niveles(self, coche_id):
-        c = self.conn.cursor()
-        return c.execute(
-            "SELECT * FROM niveles WHERE coche_id=? ORDER BY id DESC",
-            (coche_id,)
-        ).fetchall()
-
-    # ─── ALERTAS ──────────────────────────────────────────────────────────────
-
-    def get_alertas_pendientes(self):
-        """Detecta mantenimientos próximos por km y por fecha"""
-        alertas = []
-        hoy = datetime.now()
-        margen_dias = 30
-        margen_km = 1000
-
-        coches = self.get_coches()
-        for coche in coches:
-            nombre = f"{coche['marca']} {coche['modelo']} ({coche['matricula']})"
-            km_actual = coche["km_actuales"]
-
-            # Alertas de mantenimiento por km y fecha
-            mantenimientos = self.get_mantenimientos(coche["id"])
-            tipos_vistos = set()
-            for m in mantenimientos:
-                if m["tipo"] in tipos_vistos:
-                    continue
-                tipos_vistos.add(m["tipo"])
-
-                if m["proximo_km"] and (m["proximo_km"] - km_actual) <= margen_km:
-                    diff = m["proximo_km"] - km_actual
-                    if diff <= 0:
-                        alertas.append({"coche": nombre, "mensaje": f"⚠️ {m['tipo']} VENCIDO por km (hace {abs(diff):,} km)"})
-                    else:
-                        alertas.append({"coche": nombre, "mensaje": f"🔧 {m['tipo']} en {diff:,} km"})
-
-                if m["proxima_fecha"]:
-                    try:
-                        fecha_prox = datetime.strptime(m["proxima_fecha"], "%d/%m/%Y")
-                        diff_dias = (fecha_prox - hoy).days
-                        if diff_dias <= margen_dias:
-                            if diff_dias < 0:
-                                alertas.append({"coche": nombre, "mensaje": f"⚠️ {m['tipo']} VENCIDO (hace {abs(diff_dias)} días)"})
-                            else:
-                                alertas.append({"coche": nombre, "mensaje": f"🔧 {m['tipo']} en {diff_dias} días"})
-                    except ValueError:
-                        pass
-
-            # Alertas de seguro
-            seguro = self.get_seguro(coche["id"])
-            if seguro and seguro["fecha_vencimiento"]:
+        for e in events:
+            if e['next_date']:
                 try:
-                    fecha_seg = datetime.strptime(seguro["fecha_vencimiento"], "%d/%m/%Y")
-                    diff_dias = (fecha_seg - hoy).days
-                    if diff_dias <= margen_dias:
-                        msg = f"📋 Seguro vence en {diff_dias} días" if diff_dias >= 0 else f"📋 Seguro VENCIDO hace {abs(diff_dias)} días"
-                        alertas.append({"coche": nombre, "mensaje": msg})
-                except ValueError:
-                    pass
+                    days = (datetime.strptime(e['next_date'], "%d/%m/%Y") - today).days
+                    if days < 0:
+                        alerts.append(f"⛔ {e['event_type']}: venció el {e['next_date']}")
+                    elif days <= 7:
+                        alerts.append(f"🔴 {e['event_type']}: vence en {days} días")
+                    elif days <= 30:
+                        alerts.append(f"🟡 {e['event_type']}: vence en {days} días")
+                except: pass
+            if e['next_km'] and current_km:
+                left = e['next_km'] - current_km
+                if left < 0:
+                    alerts.append(f"⛔ {e['event_type']}: sobrepasado por {abs(left):,} km")
+                elif left <= 500:
+                    alerts.append(f"🔴 {e['event_type']}: faltan {left:,} km")
+                elif left <= 1000:
+                    alerts.append(f"🟡 {e['event_type']}: faltan {left:,} km")
+        ins = conn.execute("SELECT * FROM insurance WHERE car_id=? ORDER BY created_at DESC LIMIT 1", (car_id,)).fetchone()
+        if ins and ins['expiry']:
+            try:
+                days = (datetime.strptime(ins['expiry'], "%d/%m/%Y") - today).days
+                if days < 0:
+                    alerts.append(f"⛔ Seguro {ins['company']}: venció el {ins['expiry']}")
+                elif days <= 30:
+                    alerts.append(f"{'🔴' if days<=7 else '🟡'} Seguro {ins['company']}: vence en {days} días")
+            except: pass
+        tax = conn.execute("SELECT * FROM taxes WHERE car_id=? ORDER BY created_at DESC LIMIT 1", (car_id,)).fetchone()
+        conn.close()
+        if tax and tax['expiry']:
+            try:
+                days = (datetime.strptime(tax['expiry'], "%d/%m/%Y") - today).days
+                if days < 0:
+                    alerts.append(f"⛔ Impuesto circulación: venció el {tax['expiry']}")
+                elif days <= 30:
+                    alerts.append(f"{'🔴' if days<=7 else '🟡'} Impuesto circulación: vence en {days} días")
+            except: pass
+        return alerts
 
-            # Alertas de ITV
-            itv = self.get_ultima_itv(coche["id"])
-            if itv and itv["proxima_fecha"]:
-                try:
-                    fecha_itv = datetime.strptime(itv["proxima_fecha"], "%d/%m/%Y")
-                    diff_dias = (fecha_itv - hoy).days
-                    if diff_dias <= margen_dias:
-                        msg = f"🔍 ITV en {diff_dias} días" if diff_dias >= 0 else f"🔍 ITV VENCIDA hace {abs(diff_dias)} días"
-                        alertas.append({"coche": nombre, "mensaje": msg})
-                except ValueError:
-                    pass
+    def add_insurance(self, car_id, company, policy, expiry, cost):
+        conn = self._conn()
+        conn.execute("INSERT INTO insurance (car_id,company,policy,expiry,cost) VALUES (?,?,?,?,?)",
+                     (car_id, company, policy, expiry, cost))
+        conn.commit()
+        conn.close()
 
-            # Alertas de impuesto
-            impuestos = self.get_impuestos(coche["id"])
-            if impuestos:
-                ultimo_imp = impuestos[0]
-                if ultimo_imp["fecha_vencimiento"]:
-                    try:
-                        fecha_imp = datetime.strptime(ultimo_imp["fecha_vencimiento"], "%d/%m/%Y")
-                        diff_dias = (fecha_imp - hoy).days
-                        if diff_dias <= margen_dias:
-                            msg = f"💶 Impuesto circulación en {diff_dias} días" if diff_dias >= 0 else f"💶 Impuesto VENCIDO hace {abs(diff_dias)} días"
-                            alertas.append({"coche": nombre, "mensaje": msg})
-                    except ValueError:
-                        pass
+    def get_insurance(self, car_id):
+        conn = self._conn()
+        rows = conn.execute("SELECT * FROM insurance WHERE car_id=? ORDER BY created_at DESC", (car_id,)).fetchall()
+        conn.close()
+        return rows
 
-        return alertas
+    def add_tax(self, car_id, amount, expiry):
+        conn = self._conn()
+        conn.execute("INSERT INTO taxes (car_id,amount,expiry) VALUES (?,?,?)", (car_id, amount, expiry))
+        conn.commit()
+        conn.close()
+
+    def add_claim(self, car_id, date, description, claim_number, status):
+        conn = self._conn()
+        conn.execute("INSERT INTO claims (car_id,date,description,claim_number,status) VALUES (?,?,?,?,?)",
+                     (car_id, date, description, claim_number, status))
+        conn.commit()
+        conn.close()
+
+    def get_claims(self, car_id):
+        conn = self._conn()
+        rows = conn.execute("SELECT * FROM claims WHERE car_id=? ORDER BY date DESC", (car_id,)).fetchall()
+        conn.close()
+        return rows
