@@ -8,6 +8,7 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes, ConversationHandler
 )
 from database import Database
+from maintenance_schedules import get_service_timeline
 from datetime import datetime
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -52,6 +53,7 @@ def main_kb(cars):
             [InlineKeyboardButton("🚗 Mis coches", callback_data="list_cars"),
              InlineKeyboardButton("⚠️ Alertas", callback_data="view_alerts")],
             [InlineKeyboardButton("📝 Registrar mantenimiento", callback_data="add_event")],
+            [InlineKeyboardButton("🔮 Próximas revisiones", callback_data="next_services")],
             [InlineKeyboardButton("📊 Ver historial", callback_data="view_history"),
              InlineKeyboardButton("📏 Actualizar km", callback_data="update_km")],
             [InlineKeyboardButton("🛡️ Seguros y admin", callback_data="admin_menu")],
@@ -124,7 +126,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(text, reply_markup=back_kb(), parse_mode="Markdown")
         return MENU
 
-    if d in ("add_event", "update_km", "view_history"):
+    if d in ("add_event", "update_km", "view_history", "next_services"):
         context.user_data['action'] = d
         return await ask_select_car(q, context)
 
@@ -182,6 +184,51 @@ async def select_car_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"📏 *{car['brand']} {car['model']}*\nKm actuales: *{car['km']:,}*\n\n¿Cuántos km tiene ahora?",
             parse_mode="Markdown")
         return UPDATE_KM
+
+    if action == "next_services":
+        events = db.get_events(car_id, limit=50)
+        last_2, next_5 = get_service_timeline(car['brand'], car['km'], car['year'], events)
+
+        text = f"🔮 *Revisiones — {car['brand']} {car['model']}*\n"
+        text += f"📏 Km actuales: *{car['km']:,}*\n\n"
+
+        if last_2:
+            text += "✅ *Últimas realizadas:*\n"
+            for e in last_2:
+                text += f"  • {e['event_type']} — {e['date']}"
+                if e['km']:
+                    text += f" ({e['km']:,} km)"
+                text += "\n"
+            text += "\n"
+
+        text += "⏭️ *Próximas 5 revisiones:*\n\n"
+        for i, s in enumerate(next_5, 1):
+            if s['overdue']:
+                icon = "⛔"
+            elif s.get('km_left') is not None and s['km_left'] < 1000:
+                icon = "🔴"
+            elif s.get('days_left') is not None and s['days_left'] < 30:
+                icon = "🔴"
+            else:
+                icon = "🟡"
+
+            text += f"{icon} *{i}. {s['description']}*\n"
+            if s['next_km']:
+                km_left = s['km_left']
+                if km_left < 0:
+                    text += f"  📏 {s['next_km']:,} km _(vencido por {abs(km_left):,} km)_\n"
+                else:
+                    text += f"  📏 {s['next_km']:,} km _(faltan {km_left:,} km)_\n"
+            if s['next_date']:
+                if s.get('days_left') is not None and s['days_left'] < 0:
+                    text += f"  📅 {s['next_date']} _(vencido)_\n"
+                else:
+                    text += f"  📅 {s['next_date']}\n"
+            text += "\n"
+
+        text += "_Intervalos estándar del fabricante_"
+        await q.edit_message_text(text, reply_markup=back_kb(), parse_mode="Markdown")
+        return MENU
 
     if action == "view_history":
         events = db.get_events(car_id)
