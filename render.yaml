@@ -2,16 +2,9 @@ services:
   - type: worker
     name: garaje-bot
     runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
-      - key: BOT_TOKEN
+      - key: TELEGRAM_TOKEN
         sync: false
-      - key: OWNER_ID
-        sync: false
-      - key: DB_PATH
-        value: /var/data/garaje.db
-    disk:
-      name: garaje-data
-      mountPath: /var/data
-      sizeGB: 1
