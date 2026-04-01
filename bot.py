@@ -564,7 +564,10 @@ def run_web_server():
 
 
 def main():
+    import asyncio
     threading.Thread(target=run_web_server, daemon=True).start()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     app = Application.builder().token(TOKEN).build()
 
     conv = ConversationHandler(
