@@ -53,6 +53,21 @@ class Database:
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (car_id) REFERENCES cars(id)
             );
+            CREATE TABLE IF NOT EXISTS scheduler_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                weekly_enabled INTEGER DEFAULT 1,
+                weekly_day TEXT DEFAULT 'mon',
+                weekly_hour INTEGER DEFAULT 9,
+                weekly_minute INTEGER DEFAULT 0,
+                km_enabled INTEGER DEFAULT 1,
+                km_day TEXT DEFAULT 'sun',
+                km_hour INTEGER DEFAULT 10,
+                km_minute INTEGER DEFAULT 0,
+                chat_id INTEGER,
+                last_weekly_sent TEXT DEFAULT '',
+                last_km_sent TEXT DEFAULT ''
+            );
+            INSERT OR IGNORE INTO scheduler_config (id) VALUES (1);
         """)
         conn.commit()
         conn.close()
@@ -185,3 +200,17 @@ class Database:
         rows = conn.execute("SELECT * FROM claims WHERE car_id=? ORDER BY date DESC", (car_id,)).fetchall()
         conn.close()
         return rows
+
+    def get_scheduler_config(self):
+        conn = self._conn()
+        row = conn.execute("SELECT * FROM scheduler_config WHERE id=1").fetchone()
+        conn.close()
+        return dict(row) if row else {}
+
+    def save_scheduler_config(self, **kwargs):
+        conn = self._conn()
+        fields = ", ".join(f"{k}=?" for k in kwargs)
+        values = list(kwargs.values())
+        conn.execute(f"UPDATE scheduler_config SET {fields} WHERE id=1", values)
+        conn.commit()
+        conn.close()

@@ -9,6 +9,9 @@ from telegram.ext import (
 )
 from database import Database
 from maintenance_schedules import get_service_timeline
+from scheduler import check_and_send_reminders, DAYS_ES
+from stats import get_car_stats, format_stats_text
+from export_pdf import generate_pdf
 from datetime import datetime
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -23,7 +26,8 @@ db = Database()
  ADD_EVENT_NEXT_DATE, ADD_EVENT_NEXT_KM, UPDATE_KM,
  ADD_INS_COMPANY, ADD_INS_POLICY, ADD_INS_EXPIRY, ADD_INS_COST,
  ADD_TAX_AMOUNT, ADD_TAX_EXPIRY,
- ADD_CLAIM_DATE, ADD_CLAIM_DESC, ADD_CLAIM_NUMBER, ADD_CLAIM_STATUS) = range(26)
+ ADD_CLAIM_DATE, ADD_CLAIM_DESC, ADD_CLAIM_NUMBER, ADD_CLAIM_STATUS,
+ SET_WEEKLY_DAY, SET_WEEKLY_HOUR, SET_KM_DAY, SET_KM_HOUR) = range(30)
 
 FUEL_TYPES = ["Gasolina", "Diésel", "Híbrido", "Eléctrico", "GLP"]
 
@@ -54,9 +58,12 @@ def main_kb(cars):
              InlineKeyboardButton("⚠️ Alertas", callback_data="view_alerts")],
             [InlineKeyboardButton("📝 Registrar mantenimiento", callback_data="add_event")],
             [InlineKeyboardButton("🔮 Próximas revisiones", callback_data="next_services")],
-            [InlineKeyboardButton("📊 Ver historial", callback_data="view_history"),
+            [InlineKeyboardButton("📊 Estadísticas", callback_data="view_stats"),
+             InlineKeyboardButton("📄 Exportar PDF", callback_data="export_pdf")],
+            [InlineKeyboardButton("📋 Ver historial", callback_data="view_history"),
              InlineKeyboardButton("📏 Actualizar km", callback_data="update_km")],
-            [InlineKeyboardButton("🛡️ Seguros y admin", callback_data="admin_menu")],
+            [InlineKeyboardButton("🛡️ Seguros y admin", callback_data="admin_menu"),
+             InlineKeyboardButton("⏰ Recordatorios", callback_data="reminders_menu")],
         ]
     kb.append([InlineKeyboardButton("➕ Añadir coche", callback_data="add_car")])
     return InlineKeyboardMarkup(kb)
@@ -67,6 +74,8 @@ def back_kb():
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    db.save_scheduler_config(chat_id=chat_id)
     cars = db.get_cars()
     n = len(cars)
     text = "🚗 *Mi Garaje*\n\n"
@@ -126,9 +135,60 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(text, reply_markup=back_kb(), parse_mode="Markdown")
         return MENU
 
-    if d in ("add_event", "update_km", "view_history", "next_services"):
+    if d in ("add_event", "update_km", "view_history", "next_services", "view_stats", "export_pdf"):
         context.user_data['action'] = d
         return await ask_select_car(q, context)
+
+    if d == "reminders_menu":
+        cfg = db.get_scheduler_config()
+        day_es = {v: k for k, v in DAYS_ES.items()}.get(cfg.get('weekly_day', 'mon'), 'Lunes')
+        km_day_es = {v: k for k, v in DAYS_ES.items()}.get(cfg.get('km_day', 'sun'), 'Domingo')
+        w_on = "✅" if cfg.get('weekly_enabled', 1) else "❌"
+        k_on = "✅" if cfg.get('km_enabled', 1) else "❌"
+        text = (f"⏰ *Recordatorios automáticos*\n\n"
+                f"{w_on} *Resumen semanal:* {day_es} a las {cfg.get('weekly_hour',9):02d}:00\n"
+                f"{k_on} *Recordatorio km:* {km_day_es} a las {cfg.get('km_hour',10):02d}:00\n")
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"{w_on} Resumen semanal", callback_data="toggle_weekly"),
+             InlineKeyboardButton("✏️ Cambiar", callback_data="edit_weekly")],
+            [InlineKeyboardButton(f"{k_on} Recordatorio km", callback_data="toggle_km"),
+             InlineKeyboardButton("✏️ Cambiar", callback_data="edit_km")],
+            [InlineKeyboardButton("⬅️ Volver", callback_data="back_main")],
+        ])
+        await q.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        return MENU
+
+    if d == "toggle_weekly":
+        cfg = db.get_scheduler_config()
+        new_val = 0 if cfg.get('weekly_enabled', 1) else 1
+        db.save_scheduler_config(weekly_enabled=new_val)
+        await q.answer("Resumen semanal " + ("activado ✅" if new_val else "desactivado ❌"))
+        q.data = "reminders_menu"
+        return await menu_handler(update, context)
+
+    if d == "toggle_km":
+        cfg = db.get_scheduler_config()
+        new_val = 0 if cfg.get('km_enabled', 1) else 1
+        db.save_scheduler_config(km_enabled=new_val)
+        await q.answer("Recordatorio km " + ("activado ✅" if new_val else "desactivado ❌"))
+        q.data = "reminders_menu"
+        return await menu_handler(update, context)
+
+    if d == "edit_weekly":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(day, callback_data=f"wday_{code}")]
+            for day, code in DAYS_ES.items()
+        ])
+        await q.edit_message_text("📅 ¿Qué día quieres recibir el resumen semanal?", reply_markup=kb)
+        return SET_WEEKLY_DAY
+
+    if d == "edit_km":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(day, callback_data=f"kday_{code}")]
+            for day, code in DAYS_ES.items()
+        ])
+        await q.edit_message_text("📅 ¿Qué día quieres el recordatorio de km?", reply_markup=kb)
+        return SET_KM_DAY
 
     if d == "admin_menu":
         kb = InlineKeyboardMarkup([
@@ -184,6 +244,51 @@ async def select_car_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"📏 *{car['brand']} {car['model']}*\nKm actuales: *{car['km']:,}*\n\n¿Cuántos km tiene ahora?",
             parse_mode="Markdown")
         return UPDATE_KM
+
+    if action == "view_stats":
+        stats = get_car_stats(car_id)
+        text = format_stats_text(car, stats)
+        await q.edit_message_text(text, reply_markup=back_kb(), parse_mode="Markdown")
+        return MENU
+
+    if action == "export_pdf":
+        await q.edit_message_text(f"⏳ Generando PDF para *{car['brand']} {car['model']}*...",
+                                   parse_mode="Markdown")
+        try:
+            pdf_bytes = generate_pdf(car_id)
+            filename = f"{car['brand']}_{car['model']}_{car['plate']}.pdf".replace(" ", "_")
+            await context.bot.send_document(
+                chat_id=q.message.chat_id,
+                document=pdf_bytes,
+                filename=filename,
+                caption=f"📄 Historial completo de {car['brand']} {car['model']}"
+            )
+        except Exception as e:
+            logger.error(f"PDF error: {e}")
+            # Fallback to text
+            try:
+                from export_pdf import _generate_plain_text
+                txt_bytes = _generate_plain_text(car_id)
+                filename = f"{car['brand']}_{car['model']}_{car['plate']}.txt".replace(" ", "_")
+                await context.bot.send_document(
+                    chat_id=q.message.chat_id,
+                    document=txt_bytes,
+                    filename=filename,
+                    caption=f"📄 Historial de {car['brand']} {car['model']} (formato texto)"
+                )
+            except Exception as e2:
+                await context.bot.send_message(
+                    chat_id=q.message.chat_id,
+                    text=f"❌ Error al generar el archivo: {e2}"
+                )
+        cars = db.get_cars()
+        await context.bot.send_message(
+            chat_id=q.message.chat_id,
+            text="🚗 *Mi Garaje* — Menú principal",
+            reply_markup=main_kb(cars),
+            parse_mode="Markdown"
+        )
+        return MENU
 
     if action == "next_services":
         events = db.get_events(car_id, limit=50)
@@ -596,26 +701,77 @@ async def add_claim_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return MENU
 
 
-def run_web_server():
-    """Minimal HTTP server so Render doesn't kill the process."""
+def run_web_server(bot_ref):
+    """Minimal HTTP server. Each ping triggers reminder check."""
+    import asyncio
     port = int(os.environ.get("PORT", 8080))
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"OK")
+            # Trigger reminder check asynchronously
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(check_and_send_reminders(bot_ref))
+                loop.close()
+            except Exception as e:
+                logger.error(f"Reminder check error: {e}")
         def log_message(self, *args):
             pass
     server = HTTPServer(("0.0.0.0", port), Handler)
     server.serve_forever()
 
 
+async def set_weekly_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    day_code = q.data.replace("wday_", "")
+    context.user_data['weekly_day'] = day_code
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{h:02d}:00", callback_data=f"wh_{h}")] for h in range(7, 22)])
+    await q.edit_message_text("🕐 ¿A qué hora?", reply_markup=kb)
+    return SET_WEEKLY_HOUR
+
+async def set_weekly_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    hour = int(q.data.replace("wh_", ""))
+    day = context.user_data.get('weekly_day', 'mon')
+    db.save_scheduler_config(weekly_day=day, weekly_hour=hour)
+    day_es = {v: k for k, v in DAYS_ES.items()}.get(day, day)
+    cars = db.get_cars()
+    await q.edit_message_text(f"✅ Resumen semanal configurado: *{day_es}* a las *{hour:02d}:00*",
+                               reply_markup=main_kb(cars), parse_mode="Markdown")
+    return MENU
+
+async def set_km_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    day_code = q.data.replace("kday_", "")
+    context.user_data['km_day'] = day_code
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"{h:02d}:00", callback_data=f"kh_{h}")] for h in range(7, 22)])
+    await q.edit_message_text("🕐 ¿A qué hora?", reply_markup=kb)
+    return SET_KM_HOUR
+
+async def set_km_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    hour = int(q.data.replace("kh_", ""))
+    day = context.user_data.get('km_day', 'sun')
+    db.save_scheduler_config(km_day=day, km_hour=hour)
+    day_es = {v: k for k, v in DAYS_ES.items()}.get(day, day)
+    cars = db.get_cars()
+    await q.edit_message_text(f"✅ Recordatorio km configurado: *{day_es}* a las *{hour:02d}:00*",
+                               reply_markup=main_kb(cars), parse_mode="Markdown")
+    return MENU
+
+
 def main():
     import asyncio
-    threading.Thread(target=run_web_server, daemon=True).start()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     app = Application.builder().token(TOKEN).build()
+    threading.Thread(target=run_web_server, args=[app.bot], daemon=True).start()
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -646,6 +802,10 @@ def main():
             ADD_CLAIM_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_claim_desc)],
             ADD_CLAIM_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_claim_number)],
             ADD_CLAIM_STATUS: [CallbackQueryHandler(add_claim_status)],
+            SET_WEEKLY_DAY: [CallbackQueryHandler(set_weekly_day)],
+            SET_WEEKLY_HOUR: [CallbackQueryHandler(set_weekly_hour)],
+            SET_KM_DAY: [CallbackQueryHandler(set_km_day)],
+            SET_KM_HOUR: [CallbackQueryHandler(set_km_hour)],
         },
         fallbacks=[CommandHandler("start", start)],
     )
